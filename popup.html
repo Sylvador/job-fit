@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Job Fit</title>
+    <link rel="stylesheet" href="popup.css" />
+</head>
+
+<body>
+    <div class="app">
+
+        <header class="topbar">
+            <h1 class="wordmark">Job&nbsp;Fit</h1>
+            <div class="topbar-actions">
+                <button id="historyToggle" class="icon-btn" title="История проверок" aria-label="История проверок">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                        stroke-width="1.6">
+                        <circle cx="12" cy="12" r="8.5" />
+                        <path d="M12 7.5V12l3 2" stroke-linecap="round" />
+                    </svg>
+                </button>
+                <button id="settingsToggle" class="icon-btn" title="Настройки" aria-label="Настройки">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                        stroke-width="1.6">
+                        <circle cx="12" cy="12" r="3.2" />
+                        <path
+                            d="M19.4 13.5c.05-.5.05-1 0-1.5l1.9-1.5-2-3.4-2.3.6a7.9 7.9 0 0 0-1.3-.75L15.3 4h-4l-.4 2.45c-.47.2-.9.45-1.3.75l-2.3-.6-2 3.4 1.9 1.5c-.05.5-.05 1 0 1.5l-1.9 1.5 2 3.4 2.3-.6c.4.3.83.55 1.3.75L11.3 20h4l.4-2.45c.47-.2.9-.45 1.3-.75l2.3.6 2-3.4-1.9-1.5Z" />
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <main id="mainView">
+            <section id="settingsPanel" class="settings hidden">
+                <label class="field-label" for="apiKey">API-ключ</label>
+                <input id="apiKey" type="password" placeholder="abc..." autocomplete="off" />
+
+                <label class="field-label" for="model">Модель</label>
+                <select id="model">
+                    <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
+                    <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+                    <option value="gemini-3.7-flash">Gemini 3.7 Flash</option>
+                </select>
+
+                <p class="hint">
+                    Ключ хранится только локально в этом браузере и уходит напрямую aistudio.google.com — больше никуда.
+                    Получить ключ: <a href="https://aistudio.google.com/api-keys" target="_blank"
+                        rel="noopener">aistudio.google.com/api-keys</a>
+                </p>
+
+                <button id="saveSettings" class="btn btn-secondary">Сохранить</button>
+            </section>
+
+            <hr class="rule" />
+
+            <section class="profile">
+                <label class="field-label" for="profile">Ваш профиль</label>
+                <textarea id="profile" rows="5"
+                    placeholder="Коротко: опыт, стек, роль и уровень, что ищете, чего избегаете (например: 5 лет backend на Go, ищу remote, не хочу менеджерскую роль)."></textarea>
+            </section>
+
+            <button id="analyzeBtn" class="btn btn-primary">Проверить эту вакансию</button>
+
+            <p id="status" class="status"></p>
+
+            <section id="result" class="result hidden">
+                <div class="result-head">
+                    <div id="scoreBadge" class="score-badge">
+                        <span id="scoreNum">–</span><span class="score-max">/10</span>
+                    </div>
+                    <div class="result-head-text">
+                        <p id="jobTitleLine" class="job-title-line"></p>
+                        <p id="verdict" class="verdict"></p>
+                    </div>
+                </div>
+
+                <div class="result-cols">
+                    <div>
+                        <p class="col-label">Сильные стороны</p>
+                        <ul id="prosList" class="plain-list"></ul>
+                    </div>
+                    <div>
+                        <p class="col-label">На что обратить внимание</p>
+                        <ul id="consList" class="plain-list"></ul>
+                    </div>
+                </div>
+
+                <div class="result-foot">
+                    <p id="resultMeta" class="result-meta"></p>
+                    <button id="recheckBtn" class="btn btn-secondary"
+                        title="Заново прочитать страницу и проверить, игнорируя кэш">Проверить заново</button>
+                </div>
+            </section>
+        </main>
+
+        <section id="historyView" class="history-view hidden">
+            <div class="history-toolbar">
+                <select id="historySort" title="Сортировка">
+                    <option value="date">Сначала новые</option>
+                    <option value="score">По оценке</option>
+                </select>
+                <input id="historySearch" type="search" placeholder="Поиск по названию…" autocomplete="off" />
+            </div>
+            <ul id="historyList" class="history-list"></ul>
+            <p id="historyEmpty" class="history-empty hidden"></p>
+            <button id="clearHistory" class="btn btn-secondary history-clear">Очистить всё</button>
+        </section>
+
+    </div>
+    <script src="popup.js"></script>
+</body>
+
+</html>
