@@ -268,12 +268,31 @@ async function scrapeJobFromTab(tab, jobId) {
 
 // Runs inside the LinkedIn page. Keep this self-contained (no outer
 // references) since executeScript serializes it separately.
+//
+// Теперь функция асинхронная: chrome.scripting.executeScript дожидается
+// возвращённого Promise и отдаёт готовый результат.
 /**
  *
  * @param {number} jobId
- * @returns {Omit<Job, 'jobId'>}
+ * @returns {Promise<Omit<Job, 'jobId'>>}
  */
-function extractJobData(jobId) {
+async function extractJobData(jobId) {
+    const TITLE_SELECTORS = [
+        '.job-details-jobs-unified-top-card__job-title h1',
+        '.jobs-unified-top-card__job-title h1',
+        '[data-display-contents=true] > p',
+        'h1.t-24',
+        'h1',
+    ];
+
+    const DESC_SELECTORS = [
+        '#job-details > div',
+        '#job-details',
+        `#JobDetails_AboutTheJob_${jobId} > div > div > div > div > div > p > span`,
+        '.jobs-box__html-content',
+        'article',
+    ];
+
     function firstMatchText(selectors) {
         for (const sel of selectors) {
             try {
@@ -287,21 +306,42 @@ function extractJobData(jobId) {
         return '';
     }
 
-    const title = firstMatchText([
-        '.job-details-jobs-unified-top-card__job-title h1',
-        '.jobs-unified-top-card__job-title h1',
-        '[data-display-contents=true] > p',
-        'h1.t-24',
-        'h1',
-    ]) || document.title.replace(/\s*\|\s*LinkedIn\s*$/i, '').trim();
+    function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
 
-    const description = firstMatchText([
-        '#job-details > div',
-        '#job-details',
-        `#JobDetails_AboutTheJob_${jobId} > div > div > div > div > div > p > span`,
-        '.jobs-box__html-content',
-        'article',
-    ]);
+    // На /jobs/view/ длинное описание обрезано и спрятано за кнопкой
+    // «развернуть». Без клика спарсится усечённый текст, поэтому перед
+    // парсингом нажимаем кнопку и ждём, пока блок развернётся.
+    // Условие по location: функция исполняется в контексте страницы,
+    // и её URL всегда совпадает с tab.url, по которому мы вытащили jobId.
+    if (location.pathname.includes('/jobs/view/')) {
+        try {
+            const expandBtn = document.querySelector('[data-testid="expandable-text-button"]');
+            if (expandBtn) {
+                const lenBefore = firstMatchText(DESC_SELECTORS).length;
+                expandBtn.click();
+
+                // React перерисовывает блок асинхронно, ждём до 2 секунд.
+                // Выходим, когда: (а) кнопка исчезла из DOM, или (б) текст
+                // описания вырос. Второе условие страхует случай, когда кнопка
+                // не удаляется, а превращается в «свернуть» с тем же testid.
+                const deadline = Date.now() + 2000;
+                while (Date.now() < deadline) {
+                    await sleep(120);
+                    if (!document.querySelector('[data-testid="expandable-text-button"]')) break;
+                    if (firstMatchText(DESC_SELECTORS).length > lenBefore) break;
+                }
+            }
+        } catch (e) {
+            // Шаг best-effort: если клик не сработал, парсим как раньше.
+        }
+    }
+
+    const title = firstMatchText(TITLE_SELECTORS)
+        || document.title.replace(/\s*\|\s*LinkedIn\s*$/i, '').trim();
+
+    const description = firstMatchText(DESC_SELECTORS);
 
     return { title, description };
 }
