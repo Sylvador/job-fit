@@ -15,12 +15,18 @@
 // ---------------------------------------------------------------------------
 
 /**
- * @typedef {{ title: string, description: string, jobId: string }} Job
+ * @typedef {{ title: string, description: string, jobId: string, skills: string[] }} Job
+ */
+
+/**
+ * @typedef {{ text: string }} Part
  */
 
 /**
  * @typedef {Object} CheckRecord
  * @property {string} jobId
+ * @property {'linkedin'|'hh'} site
+ * @property {string} [url] — канонический URL вакансии (для ссылок из истории)
  * @property {string} title
  * @property {{ score: number, verdict: string, pros: string[], cons: string[] }} verdict
  * @property {string} model
@@ -67,8 +73,55 @@ let currentView = 'main';
 /** @type {CheckRecord[]} */
 let historyRecords = [];
 
-function checkKey(jobId) {
-    return `${CHECK_KEY_PREFIX}${jobId}`;
+function checkKey(site, jobId) {
+    return `${CHECK_KEY_PREFIX}${site}_${jobId}`;
+}
+
+function siteName(url) {
+    if (!url) return null;
+    if (url.includes('linkedin.com')) return 'linkedin';
+    if (url.includes('headhunter.ge') || url.includes('hh.ru')) return 'hh';
+    return null;
+}
+
+// Находит активную вкладку, определяет сайт и jobId, ничего не инжектируя.
+async function getActiveTabInfo() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const site = siteName(tab?.url);
+    if (!tab || !site) return { tab: null, site: null, jobId: null };
+    return { tab, site, jobId: parseJobId(tab.url) };
+}
+
+function parseJobId(url) {
+    let match;
+    if (url.includes('linkedin.com')) {
+        match = url.match(/[?&]currentJobId=(\d+)/);
+        if (match) return match[1];
+        match = url.match(/\/jobs\/view\/(\d+)/);
+        return match ? match[1] : null;
+    }
+    if (url.includes('headhunter.ge') || url.includes('hh.ru')) {
+        match = url.match(/\/vacancy\/(\d+)/);
+        return match ? match[1] : null;
+    }
+    return null;
+}
+
+async function getCheckRecord(site, jobId) {
+    const key = checkKey(site, jobId);
+    return (await chrome.storage.local.get(key))?.[key] || null;
+}
+
+function buildJobUrl(site, tabUrl, jobId) {
+    if (site === 'linkedin') return `https://www.linkedin.com/jobs/view/${jobId}`;
+    if (site === 'hh') {
+        try {
+            return `${new URL(tabUrl).origin}/vacancy/${jobId}`;
+        } catch (e) {
+            return `https://hh.ru/vacancy/${jobId}`;
+        }
+    }
+    return null;
 }
 
 function getEffectiveModel() {
@@ -172,10 +225,10 @@ async function onAnalyzeClick(force = false) {
     els.analyzeBtn.disabled = true;
     try {
         setStatus('Ищу вакансию на вкладке…', false);
-        const { tab, jobId } = await getActiveLinkedInTab();
+        const { tab, site, jobId } = await getActiveTabInfo();
 
-        if (!tab) {
-            setStatus('Это не похоже на страницу LinkedIn. Откройте вакансию на linkedin.com и попробуйте снова.', true);
+        if (!tab || !site) {
+            setStatus('Это не похоже на страницу LinkedIn или hh.ru. Откройте вакансию и попробуйте снова.', true);
             return;
         }
         if (!jobId) {
@@ -185,7 +238,7 @@ async function onAnalyzeClick(force = false) {
 
         // Быстрый путь: результат уже в кэше и инструкции не менялись.
         if (!force) {
-            const cached = await getCheckRecord(jobId);
+            const cached = await getCheckRecord(site, jobId);
             if (cached && cached.verdict
                 && cached.profileHash === hashString(profile)
                 && cached.model === model) {
@@ -212,13 +265,15 @@ async function onAnalyzeClick(force = false) {
         /** @type {CheckRecord} */
         const record = {
             jobId,
+            site,
+            url: buildJobUrl(site, tab.url, jobId),
             title: job.title,
             verdict,
             model,
             profileHash: hashString(profile),
             checkedAt: Date.now(),
         };
-        await chrome.storage.local.set({ [checkKey(jobId)]: record });
+        await chrome.storage.local.set({ [checkKey(site, jobId)]: record });
 
         renderResult(record, false);
         setStatus('', false);
@@ -229,26 +284,13 @@ async function onAnalyzeClick(force = false) {
     }
 }
 
-async function getCheckRecord(jobId) {
-    const key = checkKey(jobId);
-    return (await chrome.storage.local.get(key))?.[key] || null;
-}
-
 // Находит активную вкладку и вытаскивает jobId из URL, ничего не инжектируя.
 async function getActiveLinkedInTab() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !tab.url || !tab.url.includes('linkedin.com')) {
+    if (!tab || !tab.url || !tab.url.includes('linkedin.com') || !tab.url.includes('headhunter.ge') || !tab.url.includes('hh.ru')) {
         return { tab: null, jobId: null };
     }
     return { tab, jobId: parseJobId(tab.url) };
-}
-
-function parseJobId(url) {
-    // [?&] — параметр может стоять не первым в query string
-    let match = url.match(/[?&]currentJobId=(\d+)/);
-    if (match) return match[1];
-    match = url.match(/\/jobs\/view\/(\d+)/);
-    return match ? match[1] : null;
 }
 
 // Читает вакансию с текущей вкладки. Запускается один раз, по клику, в
@@ -262,22 +304,23 @@ async function scrapeJobFromTab(tab, jobId) {
     return {
         title: result?.title || '',
         description: result?.description || '',
+        skills: Array.isArray(result?.skills) ? result.skills : [],
         jobId: String(jobId),
     };
 }
 
-// Runs inside the LinkedIn page. Keep this self-contained (no outer
-// references) since executeScript serializes it separately.
-//
-// Теперь функция асинхронная: chrome.scripting.executeScript дожидается
-// возвращённого Promise и отдаёт готовый результат.
+// Runs inside the LinkedIn/hh page. Keep this self-contained (no outer
+// references) since executeScript serializes it separately — константы и
+// хелперы из popup.js сюда не попадают.
 /**
  *
  * @param {number} jobId
  * @returns {Promise<Omit<Job, 'jobId'>>}
  */
 async function extractJobData(jobId) {
-    const TITLE_SELECTORS = [
+    const isLinkedIn = location.hostname.includes('linkedin.com');
+
+    const LINKEDIN_TITLE = [
         '.job-details-jobs-unified-top-card__job-title h1',
         '.jobs-unified-top-card__job-title h1',
         '[data-display-contents=true] > p',
@@ -285,13 +328,17 @@ async function extractJobData(jobId) {
         'h1',
     ];
 
-    const DESC_SELECTORS = [
+    const LINKEDIN_DESC = [
         '#job-details > div',
         '#job-details',
         `#JobDetails_AboutTheJob_${jobId} > div > div > div > div > div > p > span`,
         '.jobs-box__html-content',
         'article',
     ];
+
+    const HH_TITLE = ['[data-qa="vacancy-title"]'];
+    const HH_DESC = ['[data-qa="vacancy-description"]'];
+    const HH_SKILLS = '[data-qa="skills-element"]';
 
     function firstMatchText(selectors) {
         for (const sel of selectors) {
@@ -311,26 +358,18 @@ async function extractJobData(jobId) {
     }
 
     // На /jobs/view/ длинное описание обрезано и спрятано за кнопкой
-    // «развернуть». Без клика спарсится усечённый текст, поэтому перед
-    // парсингом нажимаем кнопку и ждём, пока блок развернётся.
-    // Условие по location: функция исполняется в контексте страницы,
-    // и её URL всегда совпадает с tab.url, по которому мы вытащили jobId.
-    if (location.pathname.includes('/jobs/view/')) {
+    // «развернуть» — раскрываем перед парсингом (best-effort, до 2 с).
+    if (isLinkedIn && location.pathname.includes('/jobs/view/')) {
         try {
             const expandBtn = document.querySelector('[data-testid="expandable-text-button"]');
             if (expandBtn) {
-                const lenBefore = firstMatchText(DESC_SELECTORS).length;
+                const lenBefore = firstMatchText(LINKEDIN_DESC).length;
                 expandBtn.click();
-
-                // React перерисовывает блок асинхронно, ждём до 2 секунд.
-                // Выходим, когда: (а) кнопка исчезла из DOM, или (б) текст
-                // описания вырос. Второе условие страхует случай, когда кнопка
-                // не удаляется, а превращается в «свернуть» с тем же testid.
                 const deadline = Date.now() + 2000;
                 while (Date.now() < deadline) {
                     await sleep(120);
                     if (!document.querySelector('[data-testid="expandable-text-button"]')) break;
-                    if (firstMatchText(DESC_SELECTORS).length > lenBefore) break;
+                    if (firstMatchText(LINKEDIN_DESC).length > lenBefore) break;
                 }
             }
         } catch (e) {
@@ -338,12 +377,26 @@ async function extractJobData(jobId) {
         }
     }
 
-    const title = firstMatchText(TITLE_SELECTORS)
-        || document.title.replace(/\s*\|\s*LinkedIn\s*$/i, '').trim();
+    const title = firstMatchText(isLinkedIn ? LINKEDIN_TITLE : HH_TITLE)
+        || (isLinkedIn
+            ? document.title.replace(/\s*\|\s*LinkedIn\s*$/i, '').trim()
+            // TODO: сверьте с реальным форматом <title> на tbilisi.headhunter.ge
+            : document.title.replace(/\s*[—–|]\s*(Вакансия|Vacancy)\b.*$/i, '').trim());
 
-    const description = firstMatchText(DESC_SELECTORS);
+    /** @type {Omit<Job, 'jobId'>} */
+    const job = {
+        title,
+        description: firstMatchText(isLinkedIn ? LINKEDIN_DESC : HH_DESC),
+    };
 
-    return { title, description };
+    if (!isLinkedIn) {
+        const skills = [...document.querySelectorAll(HH_SKILLS)]
+            .map((el) => el.textContent.trim())
+            .filter(Boolean);
+        if (skills.length) job.skills = skills;
+    }
+
+    return job;
 }
 
 // ---------------------------------------------------------------------------
@@ -363,10 +416,24 @@ async function switchView(view) {
 
 async function loadHistoryRecords() {
     const all = await chrome.storage.local.get(null);
-    historyRecords = Object.keys(all)
-        .filter(k => k.startsWith(CHECK_KEY_PREFIX))
-        .map(k => all[k])
-        .filter(r => r && typeof r === 'object' && r.verdict);
+    historyRecords = [];
+
+    for (const [key, value] of Object.entries(all)) {
+        if (!key.startsWith(CHECK_KEY_PREFIX)) continue;
+        if (!value || typeof value !== 'object' || !value.verdict) continue;
+
+        // Записи до добавления hh (ключ `check_<jobId>`, без сайта):
+        // помечаем как linkedin и переносим на новый формат ключа.
+        if (!value.site) {
+            value.site = 'linkedin';
+            const newKey = checkKey(value.site, value.jobId);
+            if (newKey !== key) {
+                await chrome.storage.local.set({ [newKey]: value });
+                await chrome.storage.local.remove(key);
+            }
+        }
+        historyRecords.push(value);
+    }
 }
 
 function renderHistoryList() {
@@ -386,7 +453,7 @@ function renderHistoryList() {
     els.historyEmpty.classList.toggle('hidden', items.length !== 0);
     if (items.length === 0) {
         els.historyEmpty.textContent = historyRecords.length === 0
-            ? 'Пока нет сохранённых проверок. Откройте вакансию на LinkedIn и нажмите «Проверить эту вакансию».'
+            ? 'Пока нет сохранённых проверок. Откройте вакансию на LinkedIn или hh и нажмите «Проверить эту вакансию».'
             : 'Ничего не найдено. Измените поисковый запрос.';
     }
     els.clearHistory.classList.toggle('hidden', historyRecords.length === 0);
@@ -460,7 +527,10 @@ function buildHistoryItem(record) {
 
     const link = document.createElement('a');
     link.className = 'history-link';
-    link.href = `https://www.linkedin.com/jobs/view/${record.jobId}`;
+    link.href = record.url
+        || (record.site === 'hh'
+            ? `https://hh.ru/vacancy/${record.jobId}`
+            : `https://www.linkedin.com/jobs/view/${record.jobId}`);
     link.target = '_blank';
     link.rel = 'noopener';
     link.textContent = 'Открыть вакансию ↗';
@@ -503,8 +573,9 @@ function buildMiniCol(label, items) {
     return wrap;
 }
 
+
 async function deleteHistoryRecord(record) {
-    await chrome.storage.local.remove(checkKey(record.jobId));
+    await chrome.storage.local.remove(checkKey(record.site, record.jobId));
     historyRecords = historyRecords.filter(r => r !== record);
     renderHistoryList();
 }
@@ -512,7 +583,7 @@ async function deleteHistoryRecord(record) {
 async function clearAllHistory() {
     if (!historyRecords.length) return;
     if (!confirm(`Удалить все сохранённые проверки (${historyRecords.length})?`)) return;
-    await chrome.storage.local.remove(historyRecords.map(r => checkKey(r.jobId)));
+    await chrome.storage.local.remove(historyRecords.map(r => checkKey(r.site, r.jobId)));
     historyRecords = [];
     renderHistoryList();
 }
@@ -558,6 +629,14 @@ class ApiError extends Error {
     }
 }
 
+/**
+ * 
+ * @param {string} apiKey 
+ * @param {string} model 
+ * @param {string} profile 
+ * @param {Job} job 
+ * @returns {Promise<CheckRecord['verdict']>}
+ */
 async function callGemini(apiKey, model, profile, job) {
     const system = [
         'You are a pragmatic career advisor helping a candidate quickly judge whether',
@@ -566,16 +645,24 @@ async function callGemini(apiKey, model, profile, job) {
         'responsibilities in the posting — not on how prestigious or well-known the company is.',
     ].join(' ');
 
-    const userMsg = `Профиль кандидата:\n${profile}\n\nВакансия «${job.title}»:\n${truncate(job.description)}`;
+    /**
+     * @type {Part[]}
+     */
+    const parts = [
+        partFromText(`Профиль кандидата:\n${profile}`),
+        partFromText(`Вакансия «${job.title}»:\n${truncate(job.description)}`)
+    ]
+
+    if (job.skills?.length) {
+        parts.push(partFromText(`Ключевые навыки вакансии: ${job.skills.join(', ')}`))
+    }
 
     const resp = await fetch(getAIUrl(model), {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
             contents: [{
-                parts: [{
-                    text: userMsg,
-                }],
+                parts,
             }],
             systemInstruction: { parts: [{ text: system }] },
             generationConfig: {
@@ -663,4 +750,15 @@ function describeError(err) {
     if (err instanceof TypeError) return `${err.name}: ${err.message}`;
     // if (err instanceof TypeError) return 'Не получилось соединиться с generativelanguage.googleapis.com. Проверьте интернет-соединение.';
     return 'Что-то пошло не так. Попробуйте ещё раз.';
+}
+
+/**
+ * 
+ * @param {string} text 
+ * @returns {Part}
+ */
+function partFromText(text) {
+    return {
+        text
+    }
 }
