@@ -315,69 +315,105 @@ async function scrapeJobFromTab(tab, jobId) {
 /**
  *
  * @param {number} jobId
- * @returns {Promise<Omit<Job, 'jobId'>>}
+ * @returns {Omit<Job, 'jobId'>}
  */
-async function extractJobData(jobId) {
+function extractJobData(jobId) {
     const isLinkedIn = location.hostname.includes('linkedin.com');
 
     const LINKEDIN_TITLE = [
+        'div[data-display-contents=true] > p > a',
         '.job-details-jobs-unified-top-card__job-title h1',
         '.jobs-unified-top-card__job-title h1',
-        '[data-display-contents=true] > p',
         'h1.t-24',
         'h1',
     ];
 
     const LINKEDIN_DESC = [
+        `#JobDetails_AboutTheJob_${jobId} p > span`,
         '#job-details > div',
         '#job-details',
-        `#JobDetails_AboutTheJob_${jobId} > div > div > div > div > div > p > span`,
         '.jobs-box__html-content',
         'article',
     ];
+
+    /**
+     * @returns {string | undefined}
+     */
+    function findDescription() {
+        let descriptionNode = firstMatchNode(isLinkedIn ? LINKEDIN_DESC : HH_DESC)
+        if (descriptionNode) {
+            return sanitizeMoreBtn(descriptionNode).innerText?.trim()
+        }
+        const aboutDivRes = [...document.querySelectorAll('div:has(> div > h2)').values().filter(n => {
+            let r = n.childNodes.values().filter(n2 => n2.textContent === 'About the job')
+            return [...r].length === 1
+        })]
+        if (aboutDivRes.length === 0) {
+            throw new Error('no job description found')
+        }
+        if (aboutDivRes.length > 1) {
+            throw new Error("couldn't narrow results down to job description")
+        }
+        /**
+         * @type {HTMLDivElement}
+         */
+        const aboutDiv = aboutDivRes[0]
+        for (let i = 0; i < aboutDiv.childNodes.length - 1; i++) {
+            const n = aboutDiv.childNodes[i]
+            if (n.textContent === 'About the job') {
+                descriptionNode = aboutDiv.childNodes[i + 1]
+                return sanitizeMoreBtn(descriptionNode).innerText?.trim()
+            }
+        }
+    }
+
+    /**
+     * @param {HTMLElement} n
+     * @returns {HTMLElement}
+     */
+    function sanitizeMoreBtn(n) {
+        /**
+         * @type {HTMLElement}
+         */
+        const clone = n.cloneNode(true);
+
+        const buttons = clone.querySelectorAll('button');
+
+        for (const btn of buttons) {
+            if (btn.textContent?.trim().toLowerCase() === '… more') {
+                btn.remove();
+            }
+        }
+
+        return clone;
+    }
+
 
     const HH_TITLE = ['[data-qa="vacancy-title"]'];
     const HH_DESC = ['[data-qa="vacancy-description"]'];
     const HH_SKILLS = '[data-qa="skills-element"]';
 
-    function firstMatchText(selectors) {
+    /**
+     * 
+     * @param {HTMLElement} selectors 
+     * @returns {HTMLElement}
+     */
+    function firstMatchNode(selectors) {
         for (const sel of selectors) {
             try {
+                /**
+                 * @type {HTMLElement | null}
+                 */
                 const el = document.querySelector(sel);
-                const text = el && el.innerText ? el.innerText.trim() : '';
-                if (text) return text;
+                const text = el?.innerText ? el.innerText.trim() : '';
+                if (text) return el;
             } catch (e) {
                 // invalid/unsupported selector on this page state — try the next one
             }
         }
-        return '';
     }
 
-    function sleep(ms) {
-        return new Promise((resolve) => setTimeout(resolve, ms));
-    }
-
-    // На /jobs/view/ длинное описание обрезано и спрятано за кнопкой
-    // «развернуть» — раскрываем перед парсингом (best-effort, до 2 с).
-    if (isLinkedIn && location.pathname.includes('/jobs/view/')) {
-        try {
-            const expandBtn = document.querySelector('[data-testid="expandable-text-button"]');
-            if (expandBtn) {
-                const lenBefore = firstMatchText(LINKEDIN_DESC).length;
-                expandBtn.click();
-                const deadline = Date.now() + 2000;
-                while (Date.now() < deadline) {
-                    await sleep(120);
-                    if (!document.querySelector('[data-testid="expandable-text-button"]')) break;
-                    if (firstMatchText(LINKEDIN_DESC).length > lenBefore) break;
-                }
-            }
-        } catch (e) {
-            // Шаг best-effort: если клик не сработал, парсим как раньше.
-        }
-    }
-
-    const title = firstMatchText(isLinkedIn ? LINKEDIN_TITLE : HH_TITLE)
+    const title = firstMatchNode(isLinkedIn ? LINKEDIN_TITLE : HH_TITLE)?.innerText?.trim()
         || (isLinkedIn
             ? document.title.replace(/\s*\|\s*LinkedIn\s*$/i, '').trim()
             // TODO: сверьте с реальным форматом <title> на tbilisi.headhunter.ge
@@ -386,7 +422,7 @@ async function extractJobData(jobId) {
     /** @type {Omit<Job, 'jobId'>} */
     const job = {
         title,
-        description: firstMatchText(isLinkedIn ? LINKEDIN_DESC : HH_DESC),
+        description: findDescription(),
     };
 
     if (!isLinkedIn) {
