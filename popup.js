@@ -84,7 +84,6 @@ function siteName(url) {
     return null;
 }
 
-// Находит активную вкладку, определяет сайт и jobId, ничего не инжектируя.
 async function getActiveTabInfo() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const site = siteName(tab?.url);
@@ -194,6 +193,17 @@ async function init() {
     els.historySearch.addEventListener('input', renderHistoryList);
     els.historySort.addEventListener('change', renderHistoryList);
     els.clearHistory.addEventListener('click', clearAllHistory);
+
+    await renderCachedIfExists()
+}
+
+async function renderCachedIfExists() {
+    const { site, jobId } = await getActiveTabInfo()
+    if (!site || !jobId) return
+    const cached = await getCheckRecord(site, jobId);
+    if (!cached) return
+    renderResult(cached, true);
+    setStatus('', false);
 }
 
 // ---------------------------------------------------------------------------
