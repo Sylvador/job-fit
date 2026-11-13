@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
-    "name": "Job Fit for LinkedIn",
+    "name": "Job Fit",
     "version": "1.0.0",
-    "description": "On-demand: reads the LinkedIn job posting you're viewing and asks Gemini how well it matches your profile.",
+    "description": "On-demand: reads the job posting you're viewing and asks Gemini how well it matches your profile.",
     "action": {
         "default_popup": "popup.html",
         "default_title": "Check job fit",

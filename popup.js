@@ -697,13 +697,6 @@ function formatDateTime(ts) {
     return `${d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' })}, ${time}`;
 }
 
-function truncate(text) {
-    if (text.length <= MAX_JOB_CHARS) return text;
-    const head = text.slice(0, 4200);
-    const tail = text.slice(-1400);
-    return `${head}\n\n[…средняя часть описания сокращена…]\n\n${tail}`;
-}
-
 class ApiError extends Error {
     constructor(status, body) {
         super(`api_error_${status}`);
@@ -733,7 +726,7 @@ async function callGemini(apiKey, model, profile, job) {
      */
     const parts = [
         partFromText(`Профиль кандидата:\n${profile}`),
-        partFromText(`Вакансия «${job.title}»:\n${truncate(job.description)}`)
+        partFromText(`Вакансия «${job.title}»:\n${job.description}`)
     ]
 
     if (job.skills?.length) {
