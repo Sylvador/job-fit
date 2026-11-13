@@ -23,12 +23,16 @@
  */
 
 /**
+ * @typedef {{ score: number, verdict: string, project?: string, pros: string[], cons: string[] }} Verdict
+ */
+
+/**
  * @typedef {Object} CheckRecord
  * @property {string} jobId
  * @property {'linkedin'|'hh'} site
  * @property {string} [url] — канонический URL вакансии (для ссылок из истории)
  * @property {string} title
- * @property {{ score: number, verdict: string, pros: string[], cons: string[] }} verdict
+ * @property {Verdict} verdict
  * @property {string} model
  * @property {string} profileHash
  * @property {number} checkedAt
@@ -48,6 +52,7 @@ const els = {
     scoreNum: document.getElementById('scoreNum'),
     jobTitleLine: document.getElementById('jobTitleLine'),
     verdict: document.getElementById('verdict'),
+    project: document.getElementById('project'),
     prosList: document.getElementById('prosList'),
     consList: document.getElementById('consList'),
     // повторная проверка
@@ -81,6 +86,7 @@ function siteName(url) {
     if (!url) return null;
     if (url.includes('linkedin.com')) return 'linkedin';
     if (url.includes('headhunter.ge') || url.includes('hh.ru')) return 'hh';
+    if (url.includes('layboard.com')) return 'layboard'
     return null;
 }
 
@@ -103,6 +109,10 @@ function parseJobId(url) {
         match = url.match(/\/vacancy\/(\d+)/);
         return match ? match[1] : null;
     }
+    if (url.includes('layboard.com')) {
+        match = url.match(/\/vakansiya\/(\d+)/);
+        return match ? match[1] : null;
+    }
     return null;
 }
 
@@ -120,6 +130,7 @@ function buildJobUrl(site, tabUrl, jobId) {
             return `https://hh.ru/vacancy/${jobId}`;
         }
     }
+    if (site == 'layboard') return tabUrl
     return null;
 }
 
@@ -136,7 +147,8 @@ const responseSchema = {
     type: 'object',
     properties: {
         score: { type: 'integer', description: 'integer from 1 to 10' },
-        verdict: { type: 'string', description: 'one short sentence in Russian' },
+        verdict: { type: 'string', description: 'one short sentence in russian' },
+        project: { type: 'string', description: 'short description of a project in russian, if exists' },
         pros: {
             type: 'array',
             items: { type: 'string' },
@@ -238,7 +250,7 @@ async function onAnalyzeClick(force = false) {
         const { tab, site, jobId } = await getActiveTabInfo();
 
         if (!tab || !site) {
-            setStatus('Это не похоже на страницу LinkedIn или hh.ru. Откройте вакансию и попробуйте снова.', true);
+            setStatus('Это не похоже на страницу LinkedIn, Layboard или hh.ru. Откройте вакансию и попробуйте снова.', true);
             return;
         }
         if (!jobId) {
@@ -297,7 +309,7 @@ async function onAnalyzeClick(force = false) {
 // Находит активную вкладку и вытаскивает jobId из URL, ничего не инжектируя.
 async function getActiveLinkedInTab() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !tab.url || !tab.url.includes('linkedin.com') || !tab.url.includes('headhunter.ge') || !tab.url.includes('hh.ru')) {
+    if (!tab || !tab.url || !tab.url.includes('linkedin.com') || !tab.url.includes('headhunter.ge') || !tab.url.includes('hh.ru') || !tab.url.includes('layboard.com')) {
         return { tab: null, jobId: null };
     }
     return { tab, jobId: parseJobId(tab.url) };
@@ -328,7 +340,7 @@ async function scrapeJobFromTab(tab, jobId) {
  * @returns {Omit<Job, 'jobId'>}
  */
 function extractJobData(jobId) {
-    const isLinkedIn = location.hostname.includes('linkedin.com');
+    const hostname = location.hostname.replace('www.', '')
 
     const LINKEDIN_TITLE = [
         'div[data-display-contents=true] > p > a',
@@ -346,11 +358,45 @@ function extractJobData(jobId) {
         'article',
     ];
 
+    const HH_TITLE = ['[data-qa="vacancy-title"]'];
+    const HH_DESC = ['[data-qa="vacancy-description"]'];
+    const HH_SKILLS = '[data-qa="skills-element"]';
+
+    const LAYBOARD_TITLE = ['.lb-vacancy-page__title']
+    const LAYBOARD_DESC = ['.lb-vacancy-page__text']
+
+    /**
+     * @typedef {{ title: string[]; description: string[]; skills?: string }} Selectors
+     * @type {Record<string, Selectors>}
+     */
+    const hostSelectorsMap = {
+        'linkedin.com': {
+            title: LINKEDIN_TITLE,
+            description: LINKEDIN_DESC,
+        },
+        'hh.ru': {
+            title: HH_TITLE,
+            description: HH_DESC,
+            skills: HH_SKILLS,
+        },
+        'tbilisi.headhunter.ge': {
+            title: HH_TITLE,
+            description: HH_DESC,
+            skills: HH_SKILLS,
+        },
+        'layboard.com': {
+            title: LAYBOARD_TITLE,
+            description: LAYBOARD_DESC
+        },
+    }
+
+    const hostSelectors = hostSelectorsMap[hostname]
+
     /**
      * @returns {string | undefined}
      */
     function findDescription() {
-        let descriptionNode = firstMatchNode(isLinkedIn ? LINKEDIN_DESC : HH_DESC)
+        let descriptionNode = firstMatchNode(hostSelectors.description)
         if (descriptionNode) {
             return sanitizeMoreBtn(descriptionNode).innerText?.trim()
         }
@@ -398,14 +444,9 @@ function extractJobData(jobId) {
         return clone;
     }
 
-
-    const HH_TITLE = ['[data-qa="vacancy-title"]'];
-    const HH_DESC = ['[data-qa="vacancy-description"]'];
-    const HH_SKILLS = '[data-qa="skills-element"]';
-
     /**
      * 
-     * @param {HTMLElement} selectors 
+     * @param {string[]} selectors 
      * @returns {HTMLElement}
      */
     function firstMatchNode(selectors) {
@@ -423,10 +464,9 @@ function extractJobData(jobId) {
         }
     }
 
-    const title = firstMatchNode(isLinkedIn ? LINKEDIN_TITLE : HH_TITLE)?.innerText?.trim()
-        || (isLinkedIn
+    const title = firstMatchNode(hostSelectors.title)?.innerText?.trim()
+        || (hostname === 'linkedin.com'
             ? document.title.replace(/\s*\|\s*LinkedIn\s*$/i, '').trim()
-            // TODO: сверьте с реальным форматом <title> на tbilisi.headhunter.ge
             : document.title.replace(/\s*[—–|]\s*(Вакансия|Vacancy)\b.*$/i, '').trim());
 
     /** @type {Omit<Job, 'jobId'>} */
@@ -435,8 +475,8 @@ function extractJobData(jobId) {
         description: findDescription(),
     };
 
-    if (!isLinkedIn) {
-        const skills = [...document.querySelectorAll(HH_SKILLS)]
+    if (hostSelectors.skills) {
+        const skills = [...document.querySelectorAll(hostSelectors.skills)]
             .map((el) => el.textContent.trim())
             .filter(Boolean);
         if (skills.length) job.skills = skills;
@@ -499,7 +539,7 @@ function renderHistoryList() {
     els.historyEmpty.classList.toggle('hidden', items.length !== 0);
     if (items.length === 0) {
         els.historyEmpty.textContent = historyRecords.length === 0
-            ? 'Пока нет сохранённых проверок. Откройте вакансию на LinkedIn или hh и нажмите «Проверить эту вакансию».'
+            ? 'Пока нет сохранённых проверок. Откройте вакансию на LinkedIn, Layboard или hh и нажмите «Проверить эту вакансию».'
             : 'Ничего не найдено. Измените поисковый запрос.';
     }
     els.clearHistory.classList.toggle('hidden', historyRecords.length === 0);
@@ -574,9 +614,6 @@ function buildHistoryItem(record) {
     const link = document.createElement('a');
     link.className = 'history-link';
     link.href = record.url
-        || (record.site === 'hh'
-            ? `https://hh.ru/vacancy/${record.jobId}`
-            : `https://www.linkedin.com/jobs/view/${record.jobId}`);
     link.target = '_blank';
     link.rel = 'noopener';
     link.textContent = 'Открыть вакансию ↗';
@@ -743,6 +780,10 @@ async function callGemini(apiKey, model, profile, job) {
     }
 }
 
+/**
+ * @param {CheckRecord} record 
+ * @param {boolean} fromCache 
+ */
 function renderResult(record, fromCache) {
     const verdict = record.verdict || {};
     const score = scoreOf(record);
@@ -751,6 +792,7 @@ function renderResult(record, fromCache) {
     els.scoreBadge.className = `score-badge ${tier}`;
     els.scoreNum.textContent = String(score);
     els.jobTitleLine.textContent = record.title || '';
+    els.project.textContent = verdict.project || 'Неизвестно'
     els.verdict.textContent = verdict.verdict || '';
 
     fillList(els.prosList, verdict.pros);

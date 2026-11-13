@@ -207,6 +207,21 @@ textarea {
     font-size: 13.5px;
 }
 
+.project-container {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.project-container * {
+    margin: 0;
+}
+
+.project-container_label {
+    font-size: 11.5px;
+    color: var(--ink-soft);
+}
+
 .result-cols {
     display: grid;
     grid-template-columns: 1fr 1fr;
